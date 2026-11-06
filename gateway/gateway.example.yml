@@ -1,0 +1,76 @@
+# Gateway config for three signers reached over a private network.
+# Format: gateway/README.md of lidofinance/tee-signer (main), "Configuration".
+# An unknown key stops the start. Relative paths resolve against this file's
+# directory (in the container: /etc/gateway).
+#
+# The signer addresses are the local ports of the mesh sidecar (compose.yaml,
+# MESH_FORWARD). Without the sidecar, put each signer's VPN or public address
+# here instead, for example tcp:signer-1.example.internal:7100. Nothing else
+# in this file changes: the gateway checks every signer the same way, whatever
+# carries the bytes.
+
+listen: 0.0.0.0:19000
+access: mtls                      # validator clients show a client certificate
+metrics: 127.0.0.1:19001          # metrics_access: local (default)
+tls:
+  cert: certs/server.pem          # names the address the validator client uses
+  key: certs/server-key.pem
+  client_ca: certs/client-ca.pem  # CA of the validator client certificates
+  # min_version: "1.2"            # only for a client that offers TLS 1.2 only
+
+# The chain pin. These are Hoodi's values, as in the gateway README. For
+# mainnet use the mainnet values and see the note at the end of this file.
+chain:
+  preset: mainnet
+  genesis_fork_version: "0x10000910"
+  genesis_validators_root: "0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f"
+  forks:
+    - {epoch: 0, version: "0x20000910"}       # Altair
+    - {epoch: 0, version: "0x30000910"}       # Bellatrix
+    - {epoch: 0, version: "0x40000910"}       # Capella
+    - {epoch: 0, version: "0x50000910"}       # Deneb
+    - {epoch: 2048, version: "0x60000910"}    # Electra
+    - {epoch: 50688, version: "0x70000910"}   # Fulu; BPO forks need no line
+
+signers:
+  client_cert: certs/gateway.pem  # signing role, followed by its intermediate
+  client_key: certs/gateway-key.pem
+  nodes:
+    - name: gcp
+      address: tcp:127.0.0.1:7101   # mesh sidecar -> GCP gateway VM -> signer VM
+      allow_chain_build: hoodi
+      attestation:
+        verifier: gcp-cs
+        gcp_image_digest: "sha256:<64 hex digits>"
+        gcp_audience: signer-runner-identity
+        gcp_hwmodels: [GCP_INTEL_TDX]
+        gcp_project_id: "<PROJECT_ID>"
+        setup_sha256: "<64 hex digits>"
+    - name: azure
+      address: tcp:127.0.0.1:7102   # mesh sidecar -> Azure gateway group -> signer group
+      allow_chain_build: hoodi
+      attestation:
+        verifier: azure-maa
+        maa_host: "<MAA_HOST>"
+        cce_policy_sha256: "<64 hex digits>"
+        setup_sha256: "<64 hex digits>"
+        key_release_sha256: "<64 hex digits>"
+    - name: aws
+      address: tcp:127.0.0.1:7103   # mesh sidecar -> forwarder on the Nitro parent
+      allow_chain_build: hoodi
+      attestation:
+        verifier: aws-nitro
+        nitro_pcrs: {"0": "<96 hex digits>", "1": "<96 hex digits>", "2": "<96 hex digits>"}
+        setup_sha256: "<64 hex digits>"
+        key_release_sha256: "<64 hex digits>"
+
+policy:
+  fee_recipient_allowlist: ["<FEE_RECIPIENT_0x_ADDRESS>"]
+
+# Mainnet: leave out allow_chain_build, set mainnet: true in each attestation
+# block and use the mainnet chain values. gcp-cs then also needs
+# gcp_service_account and gcp_project_id.
+#
+# The gateway fetches the Azure attestation provider's keys from
+# https://<MAA_HOST> and Google's Confidential Space keys over HTTPS (or reads
+# gcp_jwks_file). It needs outbound HTTPS for that, outside the mesh.

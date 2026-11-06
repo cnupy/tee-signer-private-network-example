@@ -1,0 +1,81 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Gateway group of one signer: a Standard (not confidential) container group in the gateway subnet. Container mesh joins the mesh as meshHostname and forwards mesh TCP 7100 to the signer's private DNS name. Container dns-updater keeps that A record equal to the signer group's private IP. No public IP, no inbound port. relayEntryB64 and dnsUpdaterB64 are relay-entry.sh and dns-updater.sh, base64."
+  },
+  "parameters": {
+    "name": { "type": "string", "defaultValue": "signer-2-gw" },
+    "location": { "type": "string", "defaultValue": "[resourceGroup().location]" },
+    "subnetId": { "type": "string", "metadata": { "description": "Gateway subnet, delegated to Microsoft.ContainerInstance/containerGroups" } },
+    "identityId": { "type": "string", "metadata": { "description": "Resource ID of the user-assigned identity of the DNS updater" } },
+    "identityClientId": { "type": "string" },
+    "meshImage": { "type": "string", "defaultValue": "tailscale/tailscale:<VERSION>@sha256:<DIGEST>" },
+    "azCliImage": { "type": "string", "defaultValue": "mcr.microsoft.com/azure-cli:<VERSION>@sha256:<DIGEST>" },
+    "meshHostname": { "type": "string", "defaultValue": "signer-2" },
+    "meshAuthKey": { "type": "securestring", "metadata": { "description": "Tagged, ephemeral, reusable auth key: the group keeps no mesh state and joins again after every restart" } },
+    "signerFqdn": { "type": "string", "defaultValue": "signer-2.example.internal" },
+    "relayMode": { "type": "string", "defaultValue": "direct", "allowedValues": [ "direct", "nc" ] },
+    "signerGroup": { "type": "string", "metadata": { "description": "Name of the signer's confidential container group" } },
+    "dnsZone": { "type": "string", "defaultValue": "example.internal" },
+    "dnsRecord": { "type": "string", "defaultValue": "signer-2" },
+    "ipPrefix": { "type": "string", "metadata": { "description": "Prefix of the signer subnet, for example 198.51.100." } },
+    "relayEntryB64": { "type": "string" },
+    "dnsUpdaterB64": { "type": "string" }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ContainerInstance/containerGroups",
+      "apiVersion": "2023-05-01",
+      "name": "[parameters('name')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": { "[parameters('identityId')]": {} }
+      },
+      "properties": {
+        "sku": "Standard",
+        "osType": "Linux",
+        "restartPolicy": "Always",
+        "subnetIds": [ { "id": "[parameters('subnetId')]" } ],
+        "containers": [
+          {
+            "name": "mesh",
+            "properties": {
+              "image": "[parameters('meshImage')]",
+              "command": [ "/bin/sh", "-c", "echo \"$ENTRY_B64\" | base64 -d >/tmp/entry.sh && exec /bin/sh /tmp/entry.sh" ],
+              "environmentVariables": [
+                { "name": "ENTRY_B64", "value": "[parameters('relayEntryB64')]" },
+                { "name": "SIGNER_FQDN", "value": "[parameters('signerFqdn')]" },
+                { "name": "RELAY_MODE", "value": "[parameters('relayMode')]" },
+                { "name": "TS_USERSPACE", "value": "true" },
+                { "name": "TS_SERVE_CONFIG", "value": "/serve/serve.json" },
+                { "name": "TS_HOSTNAME", "value": "[parameters('meshHostname')]" },
+                { "name": "TS_AUTHKEY", "secureValue": "[parameters('meshAuthKey')]" }
+              ],
+              "resources": { "requests": { "cpu": 0.25, "memoryInGB": 0.5 } }
+            }
+          },
+          {
+            "name": "dns-updater",
+            "properties": {
+              "image": "[parameters('azCliImage')]",
+              "command": [ "/bin/sh", "-c", "echo \"$UPDATER_B64\" | base64 -d >/tmp/updater.sh && exec /bin/sh /tmp/updater.sh" ],
+              "environmentVariables": [
+                { "name": "UPDATER_B64", "value": "[parameters('dnsUpdaterB64')]" },
+                { "name": "CLIENT_ID", "value": "[parameters('identityClientId')]" },
+                { "name": "RG", "value": "[resourceGroup().name]" },
+                { "name": "SIGNER_GROUP", "value": "[parameters('signerGroup')]" },
+                { "name": "ZONE", "value": "[parameters('dnsZone')]" },
+                { "name": "RECORD", "value": "[parameters('dnsRecord')]" },
+                { "name": "IP_PREFIX", "value": "[parameters('ipPrefix')]" },
+                { "name": "INTERVAL", "value": "30" }
+              ],
+              "resources": { "requests": { "cpu": 0.25, "memoryInGB": 0.8 } }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

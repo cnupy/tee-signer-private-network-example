@@ -1,0 +1,58 @@
+# tee-signer gateway on the operator host, with an optional mesh sidecar.
+#
+#   validator client --HTTPS + client cert--> :19000 gateway
+#   gateway --mutual TLS, attestation--> 127.0.0.1:7101-7103 (mesh sidecar) --> signers
+#
+# The gateway shares the sidecar's network namespace, so it reaches the
+# signers on the sidecar's local ports and the internet through the sidecar's
+# normal Docker network. Ports are published on the sidecar.
+#
+# Without the mesh (see README, "Other network options"): delete the mesh service, remove
+# network_mode from the gateway, move "ports" to the gateway, and put the
+# signers' real addresses in gateway/gateway.yml.
+#
+# Start: docker compose up -d. Logs: docker compose logs -f gateway.
+name: tee-signer-gateway
+
+services:
+  mesh:
+    # Pin by digest in production: tailscale/tailscale:<VERSION>@sha256:<DIGEST>
+    image: tailscale/tailscale:<VERSION>
+    entrypoint: ["/bin/sh", "/mesh/mesh-entry.sh"]
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    environment:
+      TS_HOSTNAME: gateway-1
+      TS_TAGS: tag:gateway
+      TS_TUN_MTU: "1200"
+      # Local port = mesh name of the signer's entry : signer port.
+      MESH_FORWARD: "7101=signer-1:7100 7102=signer-2:7100 7103=signer-3:7100"
+    volumes:
+      - ./mesh/mesh-entry.sh:/mesh/mesh-entry.sh:ro
+      - ./mesh/state:/var/lib/tailscale
+      # One-time auth key for the first join. Remove the file after it.
+      - ./secrets/ts_authkey:/run/secrets/ts_authkey:ro
+    ports:
+      # Validator clients on this host only. For clients on other hosts,
+      # bind to the host's LAN or VPN address, never to a public one.
+      - "127.0.0.1:19000:19000"
+
+  gateway:
+    # The gateway binary built from lidofinance/tee-signer (gateway/README.md,
+    # "Run it"). It links glibc, so use a base image whose glibc is at least
+    # the build host's.
+    image: debian:trixie-slim
+    entrypoint: ["/usr/local/bin/gateway", "-config", "/etc/gateway/gateway.yml"]
+    network_mode: "service:mesh"
+    depends_on: [mesh]
+    restart: unless-stopped
+    read_only: true
+    volumes:
+      - ./bin/gateway:/usr/local/bin/gateway:ro
+      - ./gateway:/etc/gateway:ro
+      # CA bundle for the attestation key fetches (MAA, Google).
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    logging:
+      driver: json-file
+      options: {max-size: 50m, max-file: "5"}

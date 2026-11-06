@@ -1,0 +1,9 @@
+# Local files that never belong in the repo.
+bin/
+secrets/
+mesh/state/
+gateway/gateway.yml
+gateway/certs/
+*.pem
+*.p12
+*.pass
